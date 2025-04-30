@@ -1,7 +1,5 @@
 from dataclasses import dataclass, field
 from typing import List
-# from nltk.tokenize import wordpunct_tokenize
-#from nltk.corpus import words
 
 import string
 import re
