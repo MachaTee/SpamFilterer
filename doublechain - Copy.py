@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from typing import List
+from math import log
 
 import string
 import re
@@ -22,18 +23,13 @@ SPAM_THRESHOLD = .70
 @dataclass(frozen=False, order=False)
 class WordSequence:
     frequency: float
-    is_spam: bool
     chain: field(default_factory = lambda :dict())
-    """
-        Chain, as a dictionary, strings mapped to frequencies
-    """
     sequence: List[str] = field(default_factory = lambda: list())
-    sequence_length: int = WORD_SEQUENCE_LENGTH
-    already_exist: bool = False
-    def __hash__(self):
-        return hash((self.frequency, self.is_spam, " ".join(self.sequence)))
 
-model = {}
+    def __hash__(self):
+        return hash((self.frequency, " ".join(self.sequence)))
+
+model = {"spam": {}, "not_spam": {}}
 
 # Load pandas
 training_data = pd.read_csv('data\\spam_detection_training_data.csv').iloc[:2700, :]
@@ -42,7 +38,7 @@ test_data = pd.read_csv('data\\spam_detection_training_data.csv').iloc[2700:, :]
 # test_data = pd.read_csv('data\\spam_detection_test_data.csv')
 
 # I want a function to split strings into lists of WORD_SEQUENCE_LENGTH
-def sliding_window(array: list, window_size: int = WORD_SEQUENCE_LENGTH) -> list:
+def sliding_window(array: list, window_size: int = 5) -> list:
     # Dynamically adjust window size when nearing end
     array_length = len(array)
     hard_boundary = array_length - window_size
@@ -63,13 +59,12 @@ def normalise_data(training_data: pd.core.frame.DataFrame = training_data, norma
             training_data['text'].replace(REGEX_PARAMETERS, '', regex=True)
             #training_data['text'].replace(REGEX_IRI, 'IRI', regex=True)
             training_data['text'].replace('[/d]', 'NUM', regex=True)
-            return training_data
+    return normalise_data(training_data, normalisation_level - 1)
 
 normalised_test_data = normalise_data(test_data)
 
 # Now, I need to instantiate and populate WordSequence objects, how do I train?
 def train(model: dict = model, training_data: pd.core.frame.DataFrame = training_data) -> dict:
-    # Give them sequential IDs?
     """
         This is where pre-processing occurs
         Mostly just whitespace normalisation
@@ -95,43 +90,42 @@ def train(model: dict = model, training_data: pd.core.frame.DataFrame = training
             except IndexError:
                 pass
 
-            # Check if sequence exists, if not, create new WordSequence
-            if model.get(sequence):
-                # Sequence exists, append to existing sequence
-                existing_sequence = model[sequence]
+            # Now we have sequences and next_sequences, we need to discriminate based on labels and insert them into the appropriate chain
+            discriminator_key = "spam" if label_data else "not_spam"
 
-                # Increment frequency by one as it was encountered
-                existing_sequence.frequency += 1
+            # We have our key, we can now check the corresponding chain to see if the word exists already or not
+            if model[discriminator_key].get(sequence):
+                # Primary sequence exists in model, increment and check for the secondary sequence
+                model[discriminator_key][sequence].frequency += 1
 
-                # RIGHT I only care about the current one, as it's an HMM
-                # If next sequence exists within chain, increment it's frequency, otherwise append
-                if existing_sequence.chain.get(next_sequence):
-                    # if isinstance(existing_sequence.chain[next_sequence], str):
-                        # print(existing_sequence)
-                    if isinstance(existing_sequence.chain[next_sequence], str):
-                        model[existing_sequence.chain[next_sequence]].frequency += 1
-                    else:
-                        existing_sequence.chain[next_sequence].frequency += 1
+                if model[discriminator_key][sequence].chain.get(next_sequence):
+                    # Sequence exists, increment secondary sequence frequency
+                    model[discriminator_key][sequence].chain[next_sequence].frequency += 1
+                    
+                    # Task complete, proceed to next iteration
+                    # continue
+
                 else:
-                    existing_sequence.chain[next_sequence] = next_sequence
+                    # Primary sequence exists but secondary sequence does not, create new WordSequence to append to chain
+                    new_next_word_sequence = WordSequence(1, {}, next_sequence.split())
+                    model[discriminator_key][sequence].chain[next_sequence] = new_next_word_sequence
 
+                    # Task complete, proceed to next iteration
+                    # continue
             else:
-                # Sequence does not exist, create new WordSequence object and append to model
-                if not next_sequence:
-                    new_word_sequence = WordSequence(1, bool(label_data), dict(), data_sequences[sequence_index], len(data_sequences[sequence_index]))
-                else:
-                    new_next_word_sequence = WordSequence(1, bool(label_data), dict(), next_sequence.split(), len(next_sequence))
-                
-                    if next_sequence in model:
-                        new_next_word_sequence = model[next_sequence]
-                        new_next_word_sequence.already_exist = True
+                # Sequence has never been seen before, construct new sequences
+                new_next_word_sequence = WordSequence(1, {}, next_sequence.split())
+                new_word_sequence = WordSequence(1, {next_sequence : new_next_word_sequence}, sequence.split())
 
-                    # new_next_word_sequence.is_spam = bool(label_data)
-                    new_word_sequence = WordSequence(1, bool(label_data), {next_sequence: new_next_word_sequence}, data_sequences[sequence_index], len(data_sequences[sequence_index]))
-
-                model[sequence] = new_word_sequence
+                # Append to model
+                model[discriminator_key][sequence] = new_word_sequence
+                model[discriminator_key][next_sequence] = new_next_word_sequence
 
     return model
+
+
+            
+
 
 def discriminate(model: dict = model, test_data: pd.core.frame.DataFrame = test_data, normalised_test_data: pd.core.frame.DataFrame = normalised_test_data, spam_threshold: int = SPAM_THRESHOLD) -> pd.core.frame.DataFrame:
     # Discriminate based on training data
@@ -149,6 +143,7 @@ def discriminate(model: dict = model, test_data: pd.core.frame.DataFrame = test_
         # Deconstruct data into a list of sequences
         data_sequences = sliding_window(data_values.split())
         for sequence_index in range(len(data_sequences)):
+            is_spam_frequency = is_not_spam_frequency = 1
             sequence = " ".join(data_sequences[sequence_index])
             next_sequence = ""
 
@@ -157,25 +152,29 @@ def discriminate(model: dict = model, test_data: pd.core.frame.DataFrame = test_
             except IndexError:
                 pass
 
-            # Check if sequence exists in training data, if not pass
-            if model.get(sequence):
-                # Calculate increment, being the probability of a message being spam or otherwise
-                if model[sequence].chain.get(next_sequence):
-                    if model[sequence].is_spam:
-                        spam_counter["spam"] += 1
-                    else:
-                        spam_counter["not_spam"] += 1
-        
-        if spam_counter["spam"] / spam_counter["not_spam"] > spam_threshold:
-            label_data.append(1)
-        else:
-            label_data.append(0)
+            # TODO : Foreach loop this 
+            # Prompt both markov chains and sum their frequencies
+            if model["spam"].get(sequence):
+                is_spam_frequency += model["spam"][sequence].frequency
+                
+                # Does next sequence exist?
+                if model["spam"][sequence].chain.get(next_sequence):
+                    is_spam_frequency += model["spam"][sequence].chain[next_sequence].frequency
 
-        spam_data.append(spam_counter["spam"] / spam_counter["not_spam"])
+            # Do the same for not-spam
+            if model["not_spam"].get(sequence):
+                is_not_spam_frequency += model["not_spam"][sequence].frequency
+                
+                # Does next sequence exist?
+                if model["not_spam"][sequence].chain.get(next_sequence):
+                    is_not_spam_frequency += model["not_spam"][sequence].chain[next_sequence].frequency
+
+        label_data.append(int((is_spam_frequency / is_not_spam_frequency > spam_threshold)))
+    # spam_data.append(spam_counter["spam"] / spam_counter["not_spam"])
     
     # Insert label data into pandas
     test_data['test_label'] = label_data
-    test_data['spam'] = spam_data
+    # test_data['spam'] = spam_data
 
     now = datetime.datetime.now()
 
