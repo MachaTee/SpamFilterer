@@ -24,6 +24,8 @@ class WordSequence:
     frequency: float
     chain: field(default_factory = lambda :dict())
     sequence: List[str] = field(default_factory = lambda: list())
+    
+    probability: float = 0.0
 
     def __hash__(self):
         return hash((self.frequency, " ".join(self.sequence)))
@@ -59,6 +61,40 @@ def normalise_data(training_data: pd.core.frame.DataFrame = training_data, norma
             #training_data['text'].replace(REGEX_IRI, 'IRI', regex=True)
             training_data['text'].replace('[/d]', 'NUM', regex=True)
             return training_data
+
+
+def calculate_chain_probability(chain: dict, initial_sequence: str, next_sequence: str) -> float:
+    if initial_sequence not in chain:
+        return 0
+
+    probability = chain[initial_sequence].probability
+    if walrus := chain[initial_sequence].chain.get(next_sequence):
+        probability *= walrus.probability
+
+    return probability
+
+def calculate_probability(model: dict = model) -> dict:
+    """
+        Assume a sanitised parameter of model['spam' | 'not_spam'][WordSequence].chain[WordSequence]
+    """
+    # Calculate probabilities for outermost sequences
+    # Calculate sum of all frequencies ΣF
+    for discriminator_key in ('spam', 'not_spam'):
+        frequency_list = [model[discriminator_key][f].frequency for f in model[discriminator_key]]
+        total_frequencies = sum(frequency_list)
+
+        for sequence in model[discriminator_key]:
+            model[discriminator_key][sequence].probability = model[discriminator_key][sequence].frequency / total_frequencies
+            
+            # Now for it's sub-chains
+            subchain_frequency_list = [model[discriminator_key][sequence].chain[f].frequency for f in model[discriminator_key][sequence].chain]
+            total_subchain_frequency = sum(subchain_frequency_list)
+
+            for chain in model[discriminator_key][sequence].chain:
+                model[discriminator_key][sequence].chain[chain].probability = model[discriminator_key][sequence].chain[chain].frequency / total_subchain_frequency
+
+    return model
+
 
 normalised_test_data = normalise_data(test_data)
 
@@ -132,8 +168,7 @@ def train(model: dict = model, training_data: pd.core.frame.DataFrame = training
     return model
 
 
-            
-
+        
 
 def discriminate(model: dict = model, test_data: pd.core.frame.DataFrame = test_data, normalised_test_data: pd.core.frame.DataFrame = normalised_test_data, spam_threshold: int = SPAM_THRESHOLD) -> pd.core.frame.DataFrame:
     # Discriminate based on training data
@@ -151,7 +186,7 @@ def discriminate(model: dict = model, test_data: pd.core.frame.DataFrame = test_
         # Deconstruct data into a list of sequences
         data_sequences = sliding_window(data_values.split())
         for sequence_index in range(len(data_sequences)):
-            is_spam_frequency = is_not_spam_frequency = 1
+            spam_probability = not_spam_probability = 1
             sequence = " ".join(data_sequences[sequence_index])
             next_sequence = ""
 
@@ -162,29 +197,31 @@ def discriminate(model: dict = model, test_data: pd.core.frame.DataFrame = test_
 
             # TODO : Foreach loop this 
             # Prompt both markov chains and sum their frequencies
-            if model["spam"].get(sequence):
-                is_spam_frequency += model["spam"][sequence].frequency
+            # if model["spam"].get(sequence):
+            #     is_spam_frequency += model["spam"][sequence].frequency
                 
-                # Does next sequence exist?
-                if model["spam"][sequence].chain.get(next_sequence):
-                    is_spam_frequency += model["spam"][sequence].chain[next_sequence].frequency
+            #     # Does next sequence exist?
+            #     if model["spam"][sequence].chain.get(next_sequence):
+            #         is_spam_frequency += model["spam"][sequence].chain[next_sequence].frequency
 
-            # Do the same for not-spam
-            if model["not_spam"].get(sequence):
-                is_not_spam_frequency += model["not_spam"][sequence].frequency
+            # # Do the same for not-spam
+            # if model["not_spam"].get(sequence):
+            #     is_not_spam_frequency += model["not_spam"][sequence].frequency
                 
-                # Does next sequence exist?
-                if model["not_spam"][sequence].chain.get(next_sequence):
-                    is_not_spam_frequency += model["not_spam"][sequence].chain[next_sequence].frequency
-
-        label_data.append(int((is_spam_frequency / is_not_spam_frequency > spam_threshold)))
+            #     # Does next sequence exist?
+            #     if model["not_spam"][sequence].chain.get(next_sequence):
+            #         is_not_spam_frequency += model["not_spam"][sequence].chain[next_sequence].frequency
+            spam_probability += calculate_chain_probability(model['spam'], sequence, next_sequence)
+            not_spam_probability += calculate_chain_probability(model['not_spam'], sequence, next_sequence)
+            
+        label_data.append(int((spam_probability / not_spam_probability < spam_threshold)))
     # spam_data.append(spam_counter["spam"] / spam_counter["not_spam"])
     
     # Insert label data into pandas
     test_data['test_label'] = label_data
     # test_data['spam'] = spam_data
 
-    now = datetime.datetime.now()
+    # now = datetime.datetime.now()
 
     for x, y in zip(test_data['test_label'], test_data['label']):
         # print(x, y)

@@ -10,5 +10,6 @@ model = m.train()
 # for x in range(60, 101):
     # discriminant = m.discriminate(spam_threshold = x/100)
 
+model = m.calculate_probability(model)
 discriminant = m.discriminate()
 # ydiscriminant = y.discriminate()
