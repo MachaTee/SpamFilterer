@@ -60,9 +60,7 @@ def normalise_data(training_data: pd.core.frame.DataFrame = training_data, norma
         case 0:
             return training_data
         case 1:
-            training_data['text'].replace(REGEX_PARAMETERS, '', regex=True)
-            #training_data['text'].replace(REGEX_IRI, 'IRI', regex=True)
-            training_data['text'].replace('[/d]', 'NUM', regex=True)
+            training_data['text'] = training_data['text'].replace(r'[/\d+/g]', 'NUM', regex=True)
             return training_data
 
 normalised_test_data = normalise_data(test_data)
@@ -121,7 +119,7 @@ def train(model: dict = model, training_data: pd.core.frame.DataFrame = training
                     new_word_sequence = WordSequence(1, bool(label_data), dict(), data_sequences[sequence_index], len(data_sequences[sequence_index]))
                 else:
                     new_next_word_sequence = WordSequence(1, bool(label_data), dict(), next_sequence.split(), len(next_sequence))
-                
+
                     if next_sequence in model:
                         new_next_word_sequence = model[next_sequence]
                         new_next_word_sequence.already_exist = True
@@ -165,14 +163,14 @@ def discriminate(model: dict = model, test_data: pd.core.frame.DataFrame = test_
                         spam_counter["spam"] += 1
                     else:
                         spam_counter["not_spam"] += 1
-        
+
         if spam_counter["spam"] / spam_counter["not_spam"] > spam_threshold:
             label_data.append(1)
         else:
             label_data.append(0)
 
         spam_data.append(spam_counter["spam"] / spam_counter["not_spam"])
-    
+
     # Insert label data into pandas
     test_data['test_label'] = label_data
     test_data['spam'] = spam_data
